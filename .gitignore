@@ -1,0 +1,42 @@
+# Gradle
+.gradle/
+build/
+
+# Java
+*.class
+*.jar
+*.war
+*.ear
+hs_err_pid*
+replay_pid*
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDEs
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+out/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+!.env.template
+**/application-local.properties
+**/application-local.yml
+**/application-local.yaml
+**/application-*-local.properties
+**/application-*-local.yml
+**/application-*-local.yaml
+
+# Logs and temporary files
+*.log
+logs/
+*.tmp
+*.swp
+
+# Operating system files
+.DS_Store
+Thumbs.db

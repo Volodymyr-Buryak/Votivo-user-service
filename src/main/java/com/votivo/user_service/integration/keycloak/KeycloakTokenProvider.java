@@ -14,12 +14,13 @@ import com.votivo.user_service.service.exception.IdentityAccessException;
 
 @RequiredArgsConstructor
 public final class KeycloakTokenProvider {
-    private final Clock clock;
-    private final String realm;
+    // Lombok builds the constructor from the final fields in this order; the callers rely on it.
     private final RestClient http;
+    private final String realm;
     private final String clientId;
-    private CachedToken cachedToken;
     private final String clientSecret;
+    private final Clock clock;
+    private CachedToken cachedToken;
 
     synchronized String accessToken() {
         Instant now = clock.instant();

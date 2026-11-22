@@ -143,6 +143,14 @@ class ApiSecurityTest {
     }
 
     @Test
+    void acceptsTheDpopTypeKeycloakGivesABoundAccessToken() throws Exception {
+        String token = token(true, "user", claims -> claims.claim("typ", "DPoP"));
+        mvc.perform(get(ME).header("Authorization", "DPoP " + token)
+                        .header("DPoP", proof(token, ME, "GET", PROOF_KEY, claims -> {})))
+                .andExpect(status().isOk());
+    }
+
+    @Test
     void boundBearerIsRejectedEvenIfProofHeaderExists() throws Exception {
         String token = token(true, "admin", claims -> {});
         mvc.perform(get(ME).header("Authorization", "Bearer " + token))
@@ -167,7 +175,7 @@ class ApiSecurityTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"issuer", "audience", "audience-missing", "expired", "subject", "short-subject", "subject-missing", "expiry-missing", "unsigned-issuer"})
+    @ValueSource(strings = {"issuer", "audience", "audience-missing", "expired", "subject", "short-subject", "subject-missing", "expiry-missing", "unsigned-issuer", "typ-id", "typ-refresh", "typ-missing"})
     void validatesAccessTokenBeforeAuthorization(String attack) throws Exception {
         String token = token(false, "user", claims -> {
             switch (attack) {
@@ -179,6 +187,9 @@ class ApiSecurityTest {
                 case "subject-missing" -> claims.subject(null);
                 case "short-subject" -> claims.subject("1-1-1-1-1");
                 case "expiry-missing" -> claims.expirationTime(null);
+                case "typ-id" -> claims.claim("typ", "ID");
+                case "typ-refresh" -> claims.claim("typ", "Refresh");
+                case "typ-missing" -> claims.claim("typ", null);
                 default -> { }
             }
         }, attack.equals("unsigned-issuer") ? issuerKey() : ISSUER_KEY);
@@ -253,7 +264,7 @@ class ApiSecurityTest {
         var claims = new JWTClaimsSet.Builder().issuer("http://localhost:18080/realms/votivo")
                 .subject(SUBJECT).audience("user-service").issueTime(new Date())
                 .expirationTime(Date.from(Instant.now().plusSeconds(300)))
-                .claim("realm_access", Map.of("roles", Set.of(role)));
+                .claim("typ", "Bearer").claim("realm_access", Map.of("roles", Set.of(role)));
         if (bound) claims.claim("cnf", Map.of("jkt", PROOF_KEY.computeThumbprint().toString()));
         customizer.accept(claims);
         var jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).type(JOSEObjectType.JWT).build(), claims.build());

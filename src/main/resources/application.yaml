@@ -1,3 +1,53 @@
 spring:
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
   application:
     name: user-service
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:15432/user_db}
+    username: ${SPRING_DATASOURCE_USERNAME:user}
+    password: ${SPRING_DATASOURCE_PASSWORD:user}
+  jpa:
+    open-in-view: false
+    properties:
+      hibernate:
+        default_batch_fetch_size: 100
+    hibernate:
+      ddl-auto: validate
+  rabbitmq:
+    host: ${SPRING_RABBITMQ_HOST:localhost}
+    port: ${SPRING_RABBITMQ_PORT:15675}
+    username: ${SPRING_RABBITMQ_USERNAME:guest}
+    password: ${SPRING_RABBITMQ_PASSWORD:guest}
+    virtual-host: ${SPRING_RABBITMQ_VIRTUAL_HOST:/}
+    listener:
+      simple:
+        default-requeue-rejected: false
+        retry:
+          enabled: true
+          max-retries: 2
+          initial-interval: 1s
+          multiplier: 2
+          max-interval: 5s
+
+app:
+  security:
+    issuer-uri: ${APP_SECURITY_ISSUER_URI:http://localhost:18080/realms/votivo}
+    jwk-set-uri: ${APP_SECURITY_JWK_SET_URI:http://localhost:18080/realms/votivo/protocol/openid-connect/certs}
+    audience: ${APP_SECURITY_AUDIENCE:user-service}
+    allowed-origins: ${APP_SECURITY_ALLOWED_ORIGINS:http://localhost:4200}
+    dpop-replay-cache-size: 100000
+    dpop-max-requests-per-key: 1000
+  identity-management:
+    client-id: ${APP_IDENTITY_MANAGEMENT_CLIENT_ID:user-service-management}
+    client-secret: ${APP_IDENTITY_MANAGEMENT_CLIENT_SECRET:}
+    email-as-username: ${APP_IDENTITY_MANAGEMENT_EMAIL_AS_USERNAME:true}
+  identity:
+    sync-enabled: ${APP_IDENTITY_SYNC_ENABLED:true}
+    base-url: ${APP_IDENTITY_BASE_URL:http://localhost:18080}
+    realm: ${APP_IDENTITY_REALM:votivo}
+    client-id: ${APP_IDENTITY_CLIENT_ID:user-service-sync}
+    client-secret: ${APP_IDENTITY_CLIENT_SECRET:}
+    page-size: ${APP_IDENTITY_PAGE_SIZE:100}
+    reconcile-interval: ${APP_IDENTITY_RECONCILE_INTERVAL:PT1H}

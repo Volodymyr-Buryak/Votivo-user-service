@@ -1,0 +1,578 @@
+openapi: 3.1.0
+info:
+  title: Votivo User Service API
+  version: 0.0.1-SNAPSHOT
+  description: |
+    API собственного профиля и административного управления пользователями.
+    Keycloak является источником идентификационных данных, PostgreSQL хранит локальную проекцию.
+    Регистрация, вход, пароли и аватары этим API не реализованы.
+
+    Все операции требуют JWT access token: проверяются подпись через JWKS, issuer,
+    временные ограничения, обязательный exp, audience (по умолчанию user-service)
+    и sub в канонической строковой форме UUID. Роли читаются из realm_access.roles:
+    только строчные user и admin; admin также даёт доступ к собственному профилю.
+    Для admin API при наличии локального профиля вызывающего дополнительно проверяется
+    его локальная роль admin. Заблокированный или локально удалённый вызывающий получает 403.
+
+    Поддерживаются две альтернативы Authorization: Bearer <access-token> для токена
+    без cnf и Authorization: DPoP <access-token> вместе с DPoP: <proof-JWT> для
+    привязанного токена. Передавать токен с cnf как Bearer запрещено (401).
+    DPoP proof создаётся клиентом для каждого запроса; Spring Security проверяет подпись,
+    привязку ключа и токена, метод/URI, время и повторное использование proof.
+    Локальный ограниченный replay cache: по умолчанию 100000 записей и 1000 запросов на ключ.
+    Swagger UI не генерирует такие proof автоматически по этой спецификации.
+
+    PATCH профиля требует все три поля, несмотря на HTTP-метод PATCH.
+    В JSON-телах неизвестные свойства отклоняются. Ответы ошибок используют ProblemDetail;
+    внутренние сообщения Keycloak и значения из невалидного запроса не раскрываются.
+servers:
+  - url: http://localhost:8080
+    description: Локальный запуск приложения; порт можно изменить через SERVER_PORT.
+  - url: http://localhost:18081
+    description: Публикуемый порт User Service в backend Docker Compose.
+tags:
+  - name: Profile
+    description: Собственный профиль; роль user или admin из access token.
+  - name: Administration
+    description: Администрирование; роль admin из access token и проверка локального статуса.
+security:
+  - bearerAuth: []
+  - dpopAuth: []
+x-dpop-proof:
+  header: DPoP
+  requiredWhen: Authorization использует схему DPoP; токен связан с ключом через cnf.jkt.
+  generation: Новый подписанный proof JWT для каждого запроса; не статический API key.
+paths:
+  /api/v1/users/me:
+    parameters:
+      - $ref: '#/components/parameters/DPoPProof'
+    get:
+      tags: [Profile]
+      operationId: getOwnProfile
+      summary: Получить собственный профиль
+      description: |
+        ID берётся исключительно из sub access token. Если локальной записи ещё нет,
+        сервис синхронизирует пользователя из Keycloak. Локально удалённая запись не
+        восстанавливается этим запросом. Отсутствующий профиль возвращает 404.
+      responses:
+        '200':
+          $ref: '#/components/responses/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        default:
+          $ref: '#/components/responses/Unexpected'
+    patch:
+      tags: [Profile]
+      operationId: updateOwnProfile
+      summary: Обновить имя, фамилию и email собственного профиля
+      description: |
+        Все три поля обязательны. ID определяется по sub access token.
+        Сервис сначала изменяет данные в Keycloak, затем синхронизирует проекцию.
+        При изменении email сбрасывается emailVerified; если включено email-as-username,
+        меняется также username. Если email изменился либо остаётся неподтверждённым,
+        сервис запрашивает в Keycloak письмо VERIFY_EMAIL.
+        Отсутствующий профиль возвращает 404; известное локальное удаление вызывающего
+        отклоняется фильтром безопасности с 403 до выполнения операции.
+        Запись в Keycloak, синхронизация и отправка письма не являются одной транзакцией:
+        ошибка 503 не гарантирует, что предшествующие действия не выполнены.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+            example:
+              firstName: Ada
+              lastName: Lovelace
+              email: ada@example.test
+      responses:
+        '200':
+          $ref: '#/components/responses/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        default:
+          $ref: '#/components/responses/Unexpected'
+    delete:
+      tags: [Profile]
+      operationId: deleteOwnProfile
+      summary: Удалить собственную учётную запись
+      description: |
+        Удаляет пользователя в Keycloak, затем помечает локальную проекцию удалённой,
+        очищая email, имя, фамилию и роли и отключая профиль. ID берётся из sub токена.
+        Записи с deletedAt не попадают в чтение и списки. Повторный запрос с тем же
+        токеном при наличии локальной отметки удаления получает 403.
+        Удаление в Keycloak и локальная запись не являются одной транзакцией.
+      responses:
+        '204':
+          description: Пользователь удалён; тело отсутствует.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        default:
+          $ref: '#/components/responses/Unexpected'
+  /api/v1/admin/users:
+    get:
+      tags: [Administration]
+      operationId: listUserProfiles
+      summary: Получить страницу локальных профилей
+      description: |
+        Читает только локальную проекцию без запроса полного списка в Keycloak.
+        Удалённые записи исключены; отключённые включены, если не задан фильтр enabled.
+        Сортировка стабильная по id по возрастанию; параметра изменения сортировки нет.
+        Поиск по вхождению в email, firstName или lastName нечувствителен к регистру.
+        Краевые пробелы search удаляются, пустой поиск не фильтрует; символы %, _ и !
+        трактуются как буквальные символы, а не шаблон SQL LIKE.
+      parameters:
+        - $ref: '#/components/parameters/DPoPProof'
+        - name: search
+          in: query
+          description: Подстрока email, имени или фамилии; максимум 255 символов до обработки.
+          schema:
+            type: string
+            maxLength: 255
+          example: ada
+        - name: enabled
+          in: query
+          description: Фильтр активности; отсутствие означает оба состояния.
+          schema:
+            type: boolean
+          example: true
+        - name: page
+          in: query
+          description: Номер страницы, начиная с нуля.
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            default: 0
+        - name: size
+          in: query
+          description: Размер страницы.
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Страница локальных профилей; items может быть пустым.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPageResponse'
+              example:
+                items: []
+                page: 0
+                size: 20
+                totalElements: 0
+                totalPages: 0
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        default:
+          $ref: '#/components/responses/Unexpected'
+  /api/v1/admin/users/{id}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+      - $ref: '#/components/parameters/DPoPProof'
+    get:
+      tags: [Administration]
+      operationId: getUserProfileById
+      summary: Получить профиль по ID
+      description: |
+        Возвращает в том числе отключённый профиль. Если локальной записи нет,
+        пытается синхронизировать её из Keycloak. Отсутствующая или локально удалённая
+        запись возвращает 404; удалённая запись этим чтением не восстанавливается.
+      responses:
+        '200':
+          $ref: '#/components/responses/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        default:
+          $ref: '#/components/responses/Unexpected'
+  /api/v1/admin/users/{id}/status:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+      - $ref: '#/components/parameters/DPoPProof'
+    patch:
+      tags: [Administration]
+      operationId: setUserEnabled
+      summary: Включить или заблокировать пользователя
+      description: |
+        Изменяет enabled в Keycloak и синхронизирует локальный профиль.
+        При enabled=false дополнительно отзывает пользовательские сессии в Keycloak.
+        Администратор не может заблокировать самого себя (403).
+        Сервис проверяет собственный профиль администратора и существование целевого.
+        Удалённая или отсутствующая целевая запись возвращает 404.
+        Действия в Keycloak, синхронизация и отзыв сессий не атомарны; при ошибке
+        синхронизации отключения сервис всё равно пытается отозвать сессии.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserStatusRequest'
+            example:
+              enabled: false
+      responses:
+        '200':
+          $ref: '#/components/responses/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        default:
+          $ref: '#/components/responses/Unexpected'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Authorization Bearer с access token без cnf. Выпуск токена выполняется вне User Service.
+    dpopAuth:
+      type: http
+      scheme: DPoP
+      description: |
+        Authorization DPoP с JWT access token, связанным с ключом через cnf.jkt.
+        Обязателен отдельный заголовок DPoP с новым proof JWT для конкретного запроса.
+        Поле security задаёт альтернативу Bearer, а не требование двух Authorization.
+  parameters:
+    DPoPProof:
+      name: DPoP
+      in: header
+      required: false
+      description: |
+        Условно обязательный proof JWT при Authorization DPoP. required=false отражает
+        возможность Bearer-аутентификации без этого заголовка. Не переиспользовать
+        proof между запросами; генерировать его ключом, к которому привязан access token.
+      schema:
+        type: string
+        minLength: 1
+      x-required-with-security-scheme: dpopAuth
+    UserId:
+      name: id
+      in: path
+      required: true
+      description: UUID пользователя в Keycloak и локальной проекции.
+      schema:
+        type: string
+        format: uuid
+      example: 7bbfa029-23b1-4dba-9850-e944e2a65a74
+  schemas:
+    UpdateProfileRequest:
+      type: object
+      additionalProperties: false
+      required: [firstName, lastName, email]
+      properties:
+        firstName:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '\S'
+          description: Обязательно; не пустое и не состоящее только из пробелов (@NotBlank).
+        lastName:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '\S'
+          description: Обязательно; не пустое и не состоящее только из пробелов (@NotBlank).
+        email:
+          type: string
+          format: email
+          minLength: 1
+          maxLength: 320
+          pattern: '\S'
+          description: Обязательно; @NotBlank, @Email и максимум 320 символов.
+    UserStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+          description: true включает пользователя, false блокирует и отзывает сессии.
+    UserRole:
+      type: string
+      enum: [user, admin]
+      description: Роль из локальной проекции; только строчные значения.
+    UserResponse:
+      type: object
+      required: [id, email, firstName, lastName, emailVerified, enabled, roles, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: [string, 'null']
+          description: Email из Keycloak; в проекции может отсутствовать.
+        firstName:
+          type: [string, 'null']
+          description: Имя из Keycloak; в проекции может отсутствовать.
+        lastName:
+          type: [string, 'null']
+          description: Фамилия из Keycloak; в проекции может отсутствовать.
+        emailVerified:
+          type: boolean
+        enabled:
+          type: boolean
+        roles:
+          type: array
+          uniqueItems: true
+          description: Множество ролей; порядок не гарантируется, может быть пустым.
+          items:
+            $ref: '#/components/schemas/UserRole'
+        createdAt:
+          type: [string, 'null']
+          format: date-time
+          description: Время создания в источнике Keycloak, если источник его передал.
+        updatedAt:
+          type: string
+          format: date-time
+          description: Время последнего изменения локальной проекции, а не JWT и не время каждого чтения.
+      example:
+        id: 7bbfa029-23b1-4dba-9850-e944e2a65a74
+        email: ada@example.test
+        firstName: Ada
+        lastName: Lovelace
+        emailVerified: true
+        enabled: true
+        roles: [user]
+        createdAt: '2026-01-01T00:00:00Z'
+        updatedAt: '2026-01-02T00:00:00Z'
+    UserPageResponse:
+      type: object
+      required: [items, page, size, totalElements, totalPages]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserResponse'
+        page:
+          type: integer
+          format: int32
+          minimum: 0
+        size:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 100
+        totalElements:
+          type: integer
+          format: int64
+          minimum: 0
+        totalPages:
+          type: integer
+          format: int32
+          minimum: 0
+    ProblemDetail:
+      type: object
+      description: |
+        Стандартный Spring ProblemDetail. errors — необязательное расширение для ошибок
+        валидации; клиент должен уметь обрабатывать ответ без него. Текст сообщений не
+        является машинным кодом ошибки. instance может отсутствовать, в частности в фильтрах.
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          example: about:blank
+        title:
+          type: string
+          example: Bad Request
+        status:
+          type: integer
+          minimum: 100
+          maximum: 599
+        detail:
+          type: string
+          example: The request is invalid or unsupported.
+        instance:
+          type: string
+          format: uri-reference
+          example: /api/v1/users/me
+        errors:
+          type: object
+          additionalProperties:
+            type: string
+          description: Необязательная карта «имя поля → сообщение»; не содержит отклонённых значений.
+  responses:
+    User:
+      description: Актуальная для выполненной операции локальная проекция пользователя.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UserResponse'
+    BadRequest:
+      description: Неверные параметры, UUID, JSON, отсутствующие обязательные поля или неизвестные JSON-свойства.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            type: about:blank
+            title: Bad Request
+            status: 400
+            detail: The request is invalid or unsupported.
+    Unauthorized:
+      description: |
+        Аутентификация отсутствует или недействительна, JWT/proof отклонён либо связанный
+        токен передан как Bearer. Entry point добавляет WWW-Authenticate: DPoP, Bearer.
+        При отклонении Bearer downgrade в AccountAccessFilter этот заголовок не добавляется.
+      headers:
+        WWW-Authenticate:
+          description: Challenge entry point; может отсутствовать при отказе фильтра AccountAccessFilter.
+          schema:
+            type: string
+          example: DPoP, Bearer
+        Cache-Control:
+          schema:
+            type: string
+            const: no-store
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            type: about:blank
+            title: Unauthorized
+            status: 401
+            detail: Authentication is required.
+    Forbidden:
+      description: |
+        Недостаточная роль, заблокированный/удалённый локальный вызывающий, отсутствие
+        локальной роли admin для admin API либо запрещённое действие (самоблокировка).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          examples:
+            security:
+              value:
+                type: about:blank
+                title: Forbidden
+                status: 403
+                detail: Access is denied.
+            profile:
+              value:
+                type: about:blank
+                title: Forbidden
+                status: 403
+                detail: This profile operation is not permitted.
+    NotFound:
+      description: Пользователь не найден, локально удалён либо исчез в Keycloak во время операции.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            type: about:blank
+            title: Not Found
+            status: 404
+            detail: User profile was not found.
+    Conflict:
+      description: Keycloak вернул конфликт записи (409), например email уже занят.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            type: about:blank
+            title: Conflict
+            status: 409
+            detail: The profile update conflicts with an existing account.
+    UnsupportedMediaType:
+      description: Неподдерживаемый тип содержимого тела запроса.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            type: about:blank
+            title: Unsupported Media Type
+            status: 415
+            detail: The request is invalid or unsupported.
+    Unavailable:
+      description: |
+        Ошибка доступа к Keycloak для операций синхронизации/изменения либо недоступность
+        локального хранилища при проверке статуса вызывающего в security filter.
+        Некоторые предшествующие внешние действия могли уже завершиться.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          examples:
+            identity:
+              value:
+                type: about:blank
+                title: Service Unavailable
+                status: 503
+                detail: The identity service is temporarily unavailable.
+            security:
+              value:
+                type: about:blank
+                title: Service Unavailable
+                status: 503
+                detail: The service is temporarily unavailable.
+    Unexpected:
+      description: |
+        Прочие ошибки. Неожиданная ошибка приложения возвращает 500 со скрытыми
+        внутренними деталями; стандартные ошибки HTTP также используют ProblemDetail.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            type: about:blank
+            title: Internal Server Error
+            status: 500
+            detail: The request could not be completed.

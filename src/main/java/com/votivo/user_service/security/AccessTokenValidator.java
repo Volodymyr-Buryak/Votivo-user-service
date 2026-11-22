@@ -21,7 +21,12 @@ public final class AccessTokenValidator implements OAuth2TokenValidator<Jwt> {
             // UUID.fromString also accepts shortened forms; require the canonical representation.
         }
 
-        if (!validSubject || token.getExpiresAt() == null || token.getAudience() == null
+        // An access token is `Bearer`, or `DPoP` when Keycloak bound it to a key; ID, refresh and offline tokens
+        // carry another `typ` and must not call the API.
+        String type = token.getClaimAsString("typ");
+        boolean accessToken = "Bearer".equals(type) || "DPoP".equals(type);
+
+        if (!validSubject || !accessToken || token.getExpiresAt() == null || token.getAudience() == null
                 || !token.getAudience().contains(audience)) {
             return OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token"));
         }

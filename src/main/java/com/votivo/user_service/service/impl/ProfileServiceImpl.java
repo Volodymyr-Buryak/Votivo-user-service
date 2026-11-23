@@ -3,6 +3,7 @@ package com.votivo.user_service.service.impl;
 import com.votivo.user_service.dto.request.UpdateProfileRequest;
 import com.votivo.user_service.dto.response.UserPageResponse;
 import com.votivo.user_service.dto.response.UserResponse;
+import com.votivo.user_service.dto.response.UserHeaderResponse;
 import com.votivo.user_service.integration.keycloak.KeycloakUserManagementClient;
 import com.votivo.user_service.service.ProfileReader;
 import com.votivo.user_service.service.ProfileService;
@@ -11,7 +12,6 @@ import com.votivo.user_service.service.UserSynchronizationService;
 import com.votivo.user_service.service.exception.ProfileAccessDeniedException;
 import com.votivo.user_service.service.exception.UserNotFoundException;
 import com.votivo.user_service.service.support.UserLockManager;
-import java.util.Objects;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -34,6 +34,12 @@ public class ProfileServiceImpl implements ProfileService {
     }
 
     @Override
+    public UserHeaderResponse getOwnHeader(UUID id) {
+        UserResponse user = getOwn(id);
+        return new UserHeaderResponse(user.firstName(), user.lastName());
+    }
+
+    @Override
     public UserResponse getById(UUID id) {
         var existing = reader.find(id);
         if (existing.isPresent()) return existing.get();
@@ -48,12 +54,10 @@ public class ProfileServiceImpl implements ProfileService {
     }
 
     private UserResponse updateOwnLocked(UUID id, UpdateProfileRequest request) {
-        UserResponse current = getOwn(id);
-        boolean emailChanged = !Objects.equals(current.email(), request.email());
-        management.updateProfile(id, request.firstName(), request.lastName(), request.email(), emailChanged);
+        getOwn(id);
+        management.updateProfile(id, request.firstName(), request.lastName());
         synchronization.synchronize(id);
         UserResponse updated = required(id);
-        if (emailChanged || !updated.emailVerified()) management.sendVerification(id);
         return updated;
     }
 

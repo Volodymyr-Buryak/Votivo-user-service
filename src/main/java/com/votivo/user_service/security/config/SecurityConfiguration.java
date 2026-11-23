@@ -71,7 +71,7 @@ public class SecurityConfiguration {
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers("/actuator/health").permitAll()
                         .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
-                        .requestMatchers("/api/v1/users/me").hasAnyRole("USER", "ADMIN")
+                        .requestMatchers("/api/v1/users/me", "/api/v1/users/me/header").hasAnyRole("USER", "ADMIN")
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(resource -> {
                     resource.jwt(jwt -> jwt.decoder(decoder).jwtAuthenticationConverter(authenticationConverter()))

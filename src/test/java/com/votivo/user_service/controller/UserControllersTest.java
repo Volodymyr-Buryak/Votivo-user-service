@@ -4,6 +4,7 @@ import com.votivo.user_service.controller.advice.ApiExceptionHandler;
 import com.votivo.user_service.dto.request.UpdateProfileRequest;
 import com.votivo.user_service.dto.response.UserPageResponse;
 import com.votivo.user_service.dto.response.UserResponse;
+import com.votivo.user_service.dto.response.UserHeaderResponse;
 import com.votivo.user_service.entity.UserRole;
 import com.votivo.user_service.service.ProfileService;
 import com.votivo.user_service.service.exception.IdentityAccessException;
@@ -71,15 +72,21 @@ class UserControllersTest {
     void ownEndpointsAlwaysUseJwtSubject() throws Exception {
         when(profiles.getOwn(actor)).thenReturn(response(actor));
         when(profiles.updateOwn(eq(actor), any())).thenReturn(response(actor));
+        when(profiles.getOwnHeader(actor)).thenReturn(new UserHeaderResponse("Ada", "Lovelace"));
+        mvc.perform(get("/api/v1/users/me/header").param("id", UUID.randomUUID().toString()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.firstName").value("Ada"))
+                .andExpect(jsonPath("$.lastName").value("Lovelace"))
+                .andExpect(jsonPath("$.email").doesNotExist());
         mvc.perform(get("/api/v1/users/me").param("id", UUID.randomUUID().toString()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.id").value(actor.toString()));
         mvc.perform(patch("/api/v1/users/me").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"firstName\":\"Ada\",\"lastName\":\"Lovelace\",\"email\":\"ada@example.test\"}"))
+                        .content("{\"firstName\":\"Ada\",\"lastName\":\"Lovelace\"}"))
                 .andExpect(status().isOk());
         mvc.perform(delete("/api/v1/users/me")).andExpect(status().isNoContent())
                 .andExpect(content().string(""));
         verify(profiles).getOwn(actor);
-        verify(profiles).updateOwn(actor, new UpdateProfileRequest("Ada", "Lovelace", "ada@example.test"));
+        verify(profiles).getOwnHeader(actor);
+        verify(profiles).updateOwn(actor, new UpdateProfileRequest("Ada", "Lovelace"));
         verify(profiles).deleteOwn(actor);
         verifyNoMoreInteractions(profiles);
     }
@@ -87,9 +94,9 @@ class UserControllersTest {
     @ParameterizedTest
     @ValueSource(strings = {
             "{}",
-            "{\"firstName\":\"Ada\",\"lastName\":\"Lovelace\"}",
-            "{\"firstName\":\" \",\"lastName\":\"Lovelace\",\"email\":\"ada@example.test\"}",
-            "{\"firstName\":\"Ada\",\"lastName\":\"Lovelace\",\"email\":\"private-invalid-value\"}"
+            "{\"firstName\":\"Ada\"}",
+            "{\"firstName\":\" \",\"lastName\":\"Lovelace\"}",
+            "{\"firstName\":\"Ada\",\"lastName\":\" \"}"
     })
     void rejectsIncompleteAndInvalidProfileWithoutEchoingValues(String body) throws Exception {
         mvc.perform(patch("/api/v1/users/me").contentType(MediaType.APPLICATION_JSON).content(body))
@@ -101,10 +108,18 @@ class UserControllersTest {
         verifyNoInteractions(profiles);
     }
 
+    @Test
+    void rejectsEmailInProfilePatchAsUnknownProperty() throws Exception {
+        mvc.perform(patch("/api/v1/users/me").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"firstName\":\"Ada\",\"lastName\":\"Lovelace\",\"email\":\"private@example.test\"}"))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(profiles);
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"roles", "id", "enabled", "emailVerified"})
     void rejectsPrivilegeAndIdentityFields(String field) throws Exception {
-        String body = "{\"firstName\":\"Ada\",\"lastName\":\"Lovelace\",\"email\":\"ada@example.test\",\""
+        String body = "{\"firstName\":\"Ada\",\"lastName\":\"Lovelace\",\""
                 + field + "\":null}";
         mvc.perform(patch("/api/v1/users/me").contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isBadRequest())

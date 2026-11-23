@@ -22,7 +22,7 @@ info:
     Локальный ограниченный replay cache: по умолчанию 100000 записей и 1000 запросов на ключ.
     Swagger UI не генерирует такие proof автоматически по этой спецификации.
 
-    PATCH профиля требует все три поля, несмотря на HTTP-метод PATCH.
+    PATCH профиля требует оба поля firstName и lastName, несмотря на HTTP-метод PATCH.
     В JSON-телах неизвестные свойства отклоняются. Ответы ошибок используют ProblemDetail;
     внутренние сообщения Keycloak и значения из невалидного запроса не раскрываются.
 servers:
@@ -43,6 +43,34 @@ x-dpop-proof:
   requiredWhen: Authorization использует схему DPoP; токен связан с ключом через cnf.jkt.
   generation: Новый подписанный proof JWT для каждого запроса; не статический API key.
 paths:
+  /api/v1/users/me/header:
+    parameters:
+      - $ref: '#/components/parameters/DPoPProof'
+    get:
+      tags: [Profile]
+      operationId: getOwnHeader
+      summary: Получить имя и фамилию для шапки
+      description: ID берётся из sub JWT. Проверки доступа, блокировки и fallback-синхронизация аналогичны полному профилю.
+      responses:
+        '200':
+          description: Имя и фамилия текущего пользователя.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserHeaderResponse'
+              example:
+                firstName: Ada
+                lastName: Lovelace
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        default:
+          $ref: '#/components/responses/Unexpected'
   /api/v1/users/me:
     parameters:
       - $ref: '#/components/parameters/DPoPProof'
@@ -70,16 +98,15 @@ paths:
     patch:
       tags: [Profile]
       operationId: updateOwnProfile
-      summary: Обновить имя, фамилию и email собственного профиля
+      summary: Обновить имя и фамилию собственного профиля
       description: |
-        Все три поля обязательны. ID определяется по sub access token.
+        Оба поля обязательны. ID определяется по sub access token.
         Сервис сначала изменяет данные в Keycloak, затем синхронизирует проекцию.
-        При изменении email сбрасывается emailVerified; если включено email-as-username,
-        меняется также username. Если email изменился либо остаётся неподтверждённым,
-        сервис запрашивает в Keycloak письмо VERIFY_EMAIL.
+        Email изменяется только через Keycloak; email в PATCH отклоняется с 400.
+        Обновление имени не меняет email, username, emailVerified и не отправляет письма.
         Отсутствующий профиль возвращает 404; известное локальное удаление вызывающего
         отклоняется фильтром безопасности с 403 до выполнения операции.
-        Запись в Keycloak, синхронизация и отправка письма не являются одной транзакцией:
+        Запись в Keycloak и синхронизация не являются одной транзакцией:
         ошибка 503 не гарантирует, что предшествующие действия не выполнены.
       requestBody:
         required: true
@@ -90,7 +117,6 @@ paths:
             example:
               firstName: Ada
               lastName: Lovelace
-              email: ada@example.test
       responses:
         '200':
           $ref: '#/components/responses/User'
@@ -312,7 +338,7 @@ components:
     UpdateProfileRequest:
       type: object
       additionalProperties: false
-      required: [firstName, lastName, email]
+      required: [firstName, lastName]
       properties:
         firstName:
           type: string
@@ -326,13 +352,6 @@ components:
           maxLength: 255
           pattern: '\S'
           description: Обязательно; не пустое и не состоящее только из пробелов (@NotBlank).
-        email:
-          type: string
-          format: email
-          minLength: 1
-          maxLength: 320
-          pattern: '\S'
-          description: Обязательно; @NotBlank, @Email и максимум 320 символов.
     UserStatusRequest:
       type: object
       additionalProperties: false
@@ -345,6 +364,15 @@ components:
       type: string
       enum: [user, admin]
       description: Роль из локальной проекции; только строчные значения.
+    UserHeaderResponse:
+      type: object
+      additionalProperties: false
+      required: [firstName, lastName]
+      properties:
+        firstName:
+          type: [string, 'null']
+        lastName:
+          type: [string, 'null']
     UserResponse:
       type: object
       required: [id, email, firstName, lastName, emailVerified, enabled, roles, createdAt, updatedAt]
@@ -354,7 +382,8 @@ components:
           format: uuid
         email:
           type: [string, 'null']
-          description: Email из Keycloak; в проекции может отсутствовать.
+          readOnly: true
+          description: Email из Keycloak; в проекции может отсутствовать. Изменяется исключительно через Keycloak.
         firstName:
           type: [string, 'null']
           description: Имя из Keycloak; в проекции может отсутствовать.

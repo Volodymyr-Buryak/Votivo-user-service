@@ -34,46 +34,15 @@ class KeycloakUserManagementClientTest {
     private final String userUrl = "https://identity.test/auth/admin/realms/test/users/" + id;
 
     @Test
-    void changedEmailResetsVerificationUpdatesUsernameAndSendsRequiredAction() {
+    void profileUpdateChangesOnlyFirstAndLastName() {
         token("cached");
         server.expect(requestTo(userUrl)).andExpect(method(HttpMethod.PUT))
                 .andExpect(header("Authorization", "Bearer cached"))
                 .andExpect(content().json("""
-                        {"firstName":"New","lastName":"Name","email":"new@example.org",
-                         "username":"new@example.org","emailVerified":false}
-                        """))
-                .andRespond(withNoContent());
-        server.expect(requestTo(userUrl + "/execute-actions-email")).andExpect(method(HttpMethod.PUT))
-                .andExpect(header("Authorization", "Bearer cached"))
-                .andExpect(content().json("[\"VERIFY_EMAIL\"]"))
-                .andRespond(withNoContent());
-        client.updateProfile(id, "New", "Name", "new@example.org", true);
-        client.sendVerification(id);
-        server.verify();
-    }
-
-    @Test
-    void unchangedEmailDoesNotSetUsernameOrVerificationFlag() {
-        token("cached");
-        server.expect(requestTo(userUrl)).andExpect(method(HttpMethod.PUT))
-                .andExpect(content().json("""
-                        {"firstName":"New","lastName":"Name","email":"old@example.org"}
+                        {"firstName":"New","lastName":"Name"}
                         """, org.springframework.test.json.JsonCompareMode.STRICT))
                 .andRespond(withNoContent());
-        client.updateProfile(id, "New", "Name", "old@example.org", false);
-        server.verify();
-    }
-
-    @Test
-    void realmsWithSeparateUsernameKeepItUnchangedOnEmailUpdate() {
-        var separateUsername = new KeycloakUserManagementClient(builder.build(), identity,
-                new IdentityManagementProperties("management", "write-secret", false), Clock.systemUTC());
-        token("cached");
-        server.expect(requestTo(userUrl)).andExpect(content().json("""
-                        {"firstName":"New","lastName":"Name","email":"new@example.org","emailVerified":false}
-                        """, org.springframework.test.json.JsonCompareMode.STRICT))
-                .andRespond(withNoContent());
-        separateUsername.updateProfile(id, "New", "Name", "new@example.org", true);
+        client.updateProfile(id, "New", "Name");
         server.verify();
     }
 
@@ -134,7 +103,7 @@ class KeycloakUserManagementClientTest {
         server.expect(requestTo(userUrl)).andRespond(withStatus(HttpStatus.NOT_FOUND));
         server.expect(requestTo(userUrl)).andRespond(withStatus(HttpStatus.CONFLICT));
         assertThatThrownBy(() -> client.delete(id)).isInstanceOf(UserNotFoundException.class);
-        assertThatThrownBy(() -> client.updateProfile(id, "New", "Name", "new@example.org", true))
+        assertThatThrownBy(() -> client.updateProfile(id, "New", "Name"))
                 .isInstanceOf(ProfileConflictException.class);
         server.verify();
     }

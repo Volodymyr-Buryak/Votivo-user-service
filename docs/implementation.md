@@ -34,6 +34,8 @@ User Service — приложение Java 25 / Spring Boot 4.1.2 на Gradle. K
 
 ### Чтение
 
+`GET /api/v1/users/me/header` возвращает только firstName и lastName с теми же проверками доступа и fallback-синхронизацией.
+
 `GET /api/v1/users/me` доступен роли `user` или `admin`. Административные маршруты требуют `admin`:
 
 - `GET /api/v1/admin/users` — список локальных неудалённых профилей;
@@ -46,17 +48,11 @@ User Service — приложение Java 25 / Spring Boot 4.1.2 на Gradle. K
 
 ### Изменение собственного профиля
 
-Несмотря на метод `PATCH /api/v1/users/me`, запрос обязан содержать все три поля: непустые `firstName`, `lastName` (до 255 символов) и корректный непустой `email` (до 320). Неизвестные JSON-поля отклоняются. Роли, `enabled` и `emailVerified` этим DTO не изменяются.
+`PATCH /api/v1/users/me` принимает только обязательные непустые `firstName` и `lastName` (до 255 символов). Неизвестные поля, включая email, отклоняются с 400. Email изменяется только через Keycloak.
 
-Под lock пользователя выполняются следующие шаги:
+Под lock пользователя проверяется собственный профиль, затем management-клиент отправляет PUT в Keycloak только с firstName и lastName. Email, username и emailVerified не передаются, письма не отправляются. После записи синхронизируется проекция и возвращается полный профиль.
 
-1. Проверяется текущий собственный профиль.
-2. Management-клиент отправляет `PUT` в Keycloak с именем, фамилией и email.
-3. При изменении email отправляется `emailVerified=false`; при `email-as-username=true` одновременно обновляется `username`.
-4. Sync-клиент перечитывает авторитетные данные и effective realm roles, затем обновляет локальную проекцию.
-5. Если email изменён либо перечитанный email ещё не подтверждён, вызывается `execute-actions-email` с `["VERIFY_EMAIL"]`.
-
-SMTP настраивается в Keycloak. Повторный PATCH с тем же неподтверждённым email снова пытается отправить письмо. Сбой письма или синхронизации после успешного Keycloak `PUT` может вернуть `503`, хотя удалённое изменение уже сохранено. Общей транзакции и автоматического отката Keycloak нет.
+Общей транзакции с Keycloak нет: сбой синхронизации может вернуть 503 после успешной удалённой записи.
 
 ### Блокировка и удаление
 
@@ -86,7 +82,7 @@ SMTP настраивается в Keycloak. Повторный PATCH с тем 
 
 ## Интеграция Keycloak
 
-`KeycloakAdminClient` используется только для чтения: список пользователей, пользователь по UUID, effective realm roles. `KeycloakUserManagementClient` выполняет профильные `PUT`, смену enabled, logout, удаление и отправку verify-email action. У каждого клиента свой `KeycloakTokenProvider` и отдельные credentials.
+`KeycloakAdminClient` используется только для чтения: список пользователей, пользователь по UUID, effective realm roles. `KeycloakUserManagementClient` выполняет профильные `PUT`, смену enabled, logout, удаление. У каждого клиента свой `KeycloakTokenProvider` и отдельные credentials.
 
 Служебные токены получаются через `client_credentials`, кешируются с запасом до истечения (`min(30 секунд, expires_in / 10)`). После HTTP `401` токен инвалидируется и запрос повторяется один раз. Неоднозначно завершившиеся записи автоматически не повторяются. HTTP connect timeout — 5 секунд, read timeout — 15 секунд. Management `404` преобразуется в `404` API, `409` — в конфликт; прочие ошибки identity provider — в `503`.
 

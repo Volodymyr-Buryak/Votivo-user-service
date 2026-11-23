@@ -26,3 +26,12 @@ Listener retries are bounded to three attempts with exponential backoff, and exh
 Run `.\gradlew.bat build` (or `./gradlew build`). Context tests use H2 in PostgreSQL compatibility mode, run the real Flyway migration, validate JPA mappings, and disable Rabbit listener/admin startup and identity synchronization. They need no live infrastructure or client secret. H2 coverage does not replace a PostgreSQL/RabbitMQ/Keycloak integration check.
 
 Profile changes require a separate user-service-management client with view-users/manage-users. Set APP_IDENTITY_MANAGEMENT_CLIENT_SECRET to match KEYCLOAK_USER_SERVICE_MANAGEMENT_SECRET in backend configuration. Keep the synchronization client read-only. Existing realms require the v5 client and audience changes from the backend Keycloak README; startup import does not update them. Replay protection currently uses a bounded per-JVM cache and assumes a single API replica.
+
+## Profile API
+
+- `GET /api/v1/users/me/header`: only firstName and lastName (nullable for incomplete profiles).
+- `GET /api/v1/users/me`: full profile, including read-only email.
+- `PATCH /api/v1/users/me`: both firstName and lastName required, nonblank, max 255. Email and other unknown fields are rejected with 400.
+- Email is changed through Keycloak only; name updates do not modify email/username/emailVerified or send email.
+
+Both GET endpoints require the same user/admin authorization and account-status checks.

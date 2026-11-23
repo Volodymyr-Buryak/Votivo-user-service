@@ -72,6 +72,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class ApiSecurityTest {
     private static final String SUBJECT = "3453cf7c-09b1-40b2-a999-4bde563a1623";
     private static final String ME = "/api/v1/users/me";
+    private static final String HEADER = "/api/v1/users/me/header";
     private static final String ADMIN = "/api/v1/admin/users";
     private static final RSAKey ISSUER_KEY = issuerKey();
     private static final ECKey PROOF_KEY = proofKey();
@@ -94,6 +95,13 @@ class ApiSecurityTest {
                 .andExpect(status().isOk());
         mvc.perform(get(ME).header("Authorization", "DPoP " + token).header("DPoP", proof))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void protectsOwnHeaderWithAuthentication() throws Exception {
+        mvc.perform(get(HEADER)).andExpect(status().isUnauthorized());
+        mvc.perform(get(HEADER).header("Authorization", "Bearer " + token(false, "user", claims -> {})))
+                .andExpect(status().isOk());
     }
 
     @Test
@@ -165,6 +173,7 @@ class ApiSecurityTest {
         String user = token(false, "user", claims -> {});
         String admin = token(false, "admin", claims -> {});
         mvc.perform(get(ME).header("Authorization", "Bearer " + user)).andExpect(status().isOk());
+        mvc.perform(get(HEADER).header("Authorization", "Bearer " + user)).andExpect(status().isOk());
         mvc.perform(get(ADMIN).header("Authorization", "Bearer " + user)).andExpect(status().isForbidden());
         mvc.perform(get(ME).header("Authorization", "Bearer " + admin)).andExpect(status().isOk());
         mvc.perform(get(ADMIN).header("Authorization", "Bearer " + admin)).andExpect(status().isOk());
@@ -318,7 +327,7 @@ class ApiSecurityTest {
 
     @RestController
     static class Endpoints {
-        @GetMapping({ME, ADMIN, "/unmapped"}) String endpoint(
+        @GetMapping({ME, HEADER, ADMIN, "/unmapped"}) String endpoint(
                 @org.springframework.security.core.annotation.AuthenticationPrincipal org.springframework.security.oauth2.jwt.Jwt principal) {
             assertThat(principal).isNotNull();
             assertThat(principal.getSubject()).isEqualTo(SUBJECT);

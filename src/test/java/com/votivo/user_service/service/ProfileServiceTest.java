@@ -2,11 +2,11 @@ package com.votivo.user_service.service;
 
 import com.votivo.user_service.dto.request.UpdateProfileRequest;
 import com.votivo.user_service.dto.response.UserResponse;
+import com.votivo.user_service.dto.response.UserHeaderResponse;
 import com.votivo.user_service.entity.UserRole;
 import com.votivo.user_service.integration.keycloak.KeycloakUserManagementClient;
 import com.votivo.user_service.service.exception.IdentityAccessException;
 import com.votivo.user_service.service.exception.ProfileAccessDeniedException;
-import com.votivo.user_service.service.exception.ProfileConflictException;
 import com.votivo.user_service.service.exception.UserNotFoundException;
 import com.votivo.user_service.service.impl.ProfileServiceImpl;
 import com.votivo.user_service.service.support.UserLockManager;
@@ -32,6 +32,13 @@ class ProfileServiceTest {
         UserResponse current = response(id, true, "old@example.org");
         when(reader.find(id)).thenReturn(Optional.of(current));
         assertThat(service.getOwn(id)).isSameAs(current);
+        verifyNoInteractions(synchronization, management, writer);
+    }
+
+    @Test
+    void ownHeaderReturnsOnlyNamesWithoutContactingIdentityProvider() {
+        when(reader.find(id)).thenReturn(Optional.of(response(id, true, "private@example.org")));
+        assertThat(service.getOwnHeader(id)).isEqualTo(new UserHeaderResponse("Old", "Name"));
         verifyNoInteractions(synchronization, management, writer);
     }
 
@@ -62,7 +69,8 @@ class ProfileServiceTest {
     void disabledOwnProfileCannotReadUpdateOrDelete() {
         when(reader.find(id)).thenReturn(Optional.of(response(id, false, "old@example.org")));
         assertThatThrownBy(() -> service.getOwn(id)).isInstanceOf(ProfileAccessDeniedException.class);
-        assertThatThrownBy(() -> service.updateOwn(id, new UpdateProfileRequest("New", "Name", "new@example.org")))
+        assertThatThrownBy(() -> service.getOwnHeader(id)).isInstanceOf(ProfileAccessDeniedException.class);
+        assertThatThrownBy(() -> service.updateOwn(id, new UpdateProfileRequest("New", "Name")))
                 .isInstanceOf(ProfileAccessDeniedException.class);
         assertThatThrownBy(() -> service.deleteOwn(id)).isInstanceOf(ProfileAccessDeniedException.class);
         verifyNoInteractions(management, writer);
@@ -70,72 +78,28 @@ class ProfileServiceTest {
     }
 
     @Test
-    void emailUpdateWritesIdentityBeforeSyncAndSendsVerificationAfterSync() {
+    void nameUpdateWritesIdentityBeforeSyncWithoutSendingEmailVerification() {
         UserResponse current = response(id, true, "old@example.org");
-        UserResponse updated = response(id, true, "new@example.org");
+        UserResponse updated = response(id, true, "old@example.org");
         when(reader.find(id)).thenReturn(Optional.of(current), Optional.of(updated));
-        assertThat(service.updateOwn(id, new UpdateProfileRequest("New", "Name", "new@example.org"))).isEqualTo(updated);
+        assertThat(service.updateOwn(id, new UpdateProfileRequest("New", "Name"))).isEqualTo(updated);
         var order = inOrder(management, synchronization, reader);
         order.verify(reader).find(id);
-        order.verify(management).updateProfile(id, "New", "Name", "new@example.org", true);
+        order.verify(management).updateProfile(id, "New", "Name");
         order.verify(synchronization).synchronize(id);
         order.verify(reader).find(id);
-        order.verify(management).sendVerification(id);
+        verifyNoMoreInteractions(management);
         verifyNoInteractions(writer);
-    }
-
-    @Test
-    void unchangedEmailDoesNotSendVerificationAndConflictDoesNotChangeProjection() {
-        when(reader.find(id)).thenReturn(Optional.of(response(id, true, "old@example.org")));
-        var request = new UpdateProfileRequest("New", "Name", "old@example.org");
-        service.updateOwn(id, request);
-        verify(management).updateProfile(id, "New", "Name", "old@example.org", false);
-        verify(management, never()).sendVerification(any());
-        clearInvocations(synchronization);
-        doThrow(new ProfileConflictException()).when(management)
-                .updateProfile(id, "New", "Name", "old@example.org", false);
-        assertThatThrownBy(() -> service.updateOwn(id, request)).isInstanceOf(ProfileConflictException.class);
-        verifyNoInteractions(writer);
-        verify(synchronization, never()).synchronize(any());
     }
 
     @Test
     void projectionFailureDoesNotRetrySuccessfulIdentityWrite() {
         when(reader.find(id)).thenReturn(Optional.of(response(id, true, "old@example.org")));
         doThrow(new IdentityAccessException("Unavailable")).when(synchronization).synchronize(id);
-        assertThatThrownBy(() -> service.updateOwn(id, new UpdateProfileRequest("New", "Name", "new@example.org")))
+        assertThatThrownBy(() -> service.updateOwn(id, new UpdateProfileRequest("New", "Name")))
                 .isInstanceOf(IdentityAccessException.class);
-        verify(management, times(1)).updateProfile(id, "New", "Name", "new@example.org", true);
-        verify(management, never()).sendVerification(any());
-    }
-
-    @Test
-    void failedMailStillLeavesProjectionSynchronized() {
-        when(reader.find(id)).thenReturn(Optional.of(response(id, true, "old@example.org")),
-                Optional.of(response(id, true, "new@example.org")));
-        doThrow(new IdentityAccessException("Mail unavailable")).when(management).sendVerification(id);
-        assertThatThrownBy(() -> service.updateOwn(id, new UpdateProfileRequest("New", "Name", "new@example.org")))
-                .isInstanceOf(IdentityAccessException.class);
-        var order = inOrder(synchronization, management);
-        order.verify(management).updateProfile(id, "New", "Name", "new@example.org", true);
-        order.verify(synchronization).synchronize(id);
-        order.verify(management).sendVerification(id);
-    }
-
-    @Test
-    void retryAfterFailedVerificationResendsMailForUnverifiedUnchangedEmail() {
-        var old = response(id, true, "old@example.org");
-        var updated = new UserResponse(id, "new@example.org", "New", "Name", false, true,
-                Set.of(UserRole.user), Instant.EPOCH, Instant.EPOCH);
-        when(reader.find(id)).thenReturn(Optional.of(old), Optional.of(updated));
-        doThrow(new IdentityAccessException("Mail unavailable")).doNothing().when(management).sendVerification(id);
-        var request = new UpdateProfileRequest("New", "Name", "new@example.org");
-        assertThatThrownBy(() -> service.updateOwn(id, request)).isInstanceOf(IdentityAccessException.class);
-
-        assertThat(service.updateOwn(id, request)).isEqualTo(updated);
-
-        verify(management, times(2)).sendVerification(id);
-        verify(management).updateProfile(id, "New", "Name", "new@example.org", false);
+        verify(management, times(1)).updateProfile(id, "New", "Name");
+        verifyNoMoreInteractions(management);
     }
 
     @Test

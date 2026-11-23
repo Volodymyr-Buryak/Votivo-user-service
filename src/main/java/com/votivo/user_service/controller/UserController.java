@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.security.oauth2.jwt.Jwt;
 import com.votivo.user_service.service.ProfileService;
 import com.votivo.user_service.dto.response.UserResponse;
+import com.votivo.user_service.dto.response.UserHeaderResponse;
 import com.votivo.user_service.dto.request.UpdateProfileRequest;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 
@@ -28,6 +29,11 @@ public class UserController {
             @Valid @RequestBody UpdateProfileRequest request
     ) {
         return profiles.updateOwn(UUID.fromString(jwt.getSubject()), request);
+    }
+
+    @GetMapping("/header")
+    public UserHeaderResponse getOwnHeader(@AuthenticationPrincipal Jwt jwt) {
+        return profiles.getOwnHeader(UUID.fromString(jwt.getSubject()));
     }
 
     @DeleteMapping

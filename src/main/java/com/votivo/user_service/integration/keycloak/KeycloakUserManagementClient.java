@@ -7,7 +7,6 @@ import com.votivo.user_service.service.exception.ProfileConflictException;
 import com.votivo.user_service.service.exception.UserNotFoundException;
 import java.time.Clock;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,7 +22,6 @@ import org.springframework.web.client.RestClientResponseException;
 public class KeycloakUserManagementClient {
     private final RestClient http;
     private final IdentityProperties identity;
-    private final IdentityManagementProperties properties;
     private final KeycloakTokenProvider tokens;
 
     @Autowired
@@ -36,25 +34,15 @@ public class KeycloakUserManagementClient {
                                  IdentityManagementProperties properties, Clock clock) {
         this.http = http;
         this.identity = identity;
-        this.properties = properties;
         this.tokens = new KeycloakTokenProvider(http, identity.realm(), properties.clientId(),
                 properties.clientSecret(), clock);
     }
 
-    public void updateProfile(UUID id, String firstName, String lastName, String email, boolean emailChanged) {
+    public void updateProfile(UUID id, String firstName, String lastName) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("firstName", firstName);
         body.put("lastName", lastName);
-        body.put("email", email);
-        if (emailChanged) {
-            body.put("emailVerified", false);
-            if (properties.emailAsUsername()) body.put("username", email);
-        }
         write(HttpMethod.PUT, id, null, body);
-    }
-
-    public void sendVerification(UUID id) {
-        write(HttpMethod.PUT, id, "execute-actions-email", List.of("VERIFY_EMAIL"));
     }
 
     public void setEnabled(UUID id, boolean enabled) {

@@ -1,5 +1,12 @@
 package com.votivo.user_service.controller.advice;
 
+import com.votivo.user_service.service.exception.UnfinishedPollsException;
+import com.votivo.user_service.service.exception.PollServiceUnavailableException;
+
+import com.votivo.user_service.image.validation.exception.ImageValidationException;
+import com.votivo.user_service.image.validation.exception.ImageTooLargeException;
+import com.votivo.user_service.image.validation.exception.UnsupportedImageFormatException;
+import com.votivo.user_service.service.exception.PhotoNotFoundException;
 import com.votivo.user_service.service.exception.IdentityAccessException;
 import com.votivo.user_service.service.exception.ProfileAccessDeniedException;
 import com.votivo.user_service.service.exception.ProfileConflictException;
@@ -39,6 +46,34 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(IdentityAccessException.class)
     public ProblemDetail unavailable(IdentityAccessException exception) {
         return problem(HttpStatus.SERVICE_UNAVAILABLE, "The identity service is temporarily unavailable.");
+    }
+
+    @ExceptionHandler(UnfinishedPollsException.class)
+    public ProblemDetail unfinishedPolls() {
+        var body = problem(HttpStatus.CONFLICT, "Close your published polls before deleting your account.");
+        body.setProperty("code", "account.unfinished-polls");
+        return body;
+    }
+
+    @ExceptionHandler(PollServiceUnavailableException.class)
+    public ProblemDetail pollUnavailable() {
+        return problem(HttpStatus.SERVICE_UNAVAILABLE, "Account deletion could not be verified. Please try again later.");
+    }
+
+    @ExceptionHandler(ImageValidationException.class)
+    public ProblemDetail invalidImage(ImageValidationException exception) {
+        HttpStatus status = exception instanceof ImageTooLargeException
+                ? HttpStatus.CONTENT_TOO_LARGE
+                : exception instanceof UnsupportedImageFormatException
+                ? HttpStatus.UNSUPPORTED_MEDIA_TYPE : HttpStatus.BAD_REQUEST;
+        ProblemDetail body = problem(status, exception.getDetail());
+        body.setProperty("code", exception.getCode());
+        return body;
+    }
+
+    @ExceptionHandler(PhotoNotFoundException.class)
+    public ProblemDetail photoNotFound(PhotoNotFoundException exception) {
+        return problem(HttpStatus.NOT_FOUND, "User photo was not found.");
     }
 
     @ExceptionHandler(Exception.class)

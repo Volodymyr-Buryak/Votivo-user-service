@@ -62,6 +62,8 @@ import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -169,13 +171,15 @@ class ApiSecurityTest {
     }
 
     @Test
-    void unboundBearerRemainsAvailableForToolsAndAdminInheritsUser() throws Exception {
+    void unboundBearerRemainsAvailableButAdminOnlyHasAdministrationAndHeaderAccess() throws Exception {
         String user = token(false, "user", claims -> {});
         String admin = token(false, "admin", claims -> {});
         mvc.perform(get(ME).header("Authorization", "Bearer " + user)).andExpect(status().isOk());
         mvc.perform(get(HEADER).header("Authorization", "Bearer " + user)).andExpect(status().isOk());
         mvc.perform(get(ADMIN).header("Authorization", "Bearer " + user)).andExpect(status().isForbidden());
-        mvc.perform(get(ME).header("Authorization", "Bearer " + admin)).andExpect(status().isOk());
+        mvc.perform(get(ME).header("Authorization", "Bearer " + admin)).andExpect(status().isForbidden());
+        mvc.perform(get(HEADER).header("Authorization", "Bearer " + admin)).andExpect(status().isOk());
+        mvc.perform(get(ME + "/photo").header("Authorization", "Bearer " + admin)).andExpect(status().isForbidden());
         mvc.perform(get(ADMIN).header("Authorization", "Bearer " + admin)).andExpect(status().isOk());
         mvc.perform(get("/unmapped").header("Authorization", "Bearer " + admin)).andExpect(status().isForbidden());
         mvc.perform(get(ME)).andExpect(status().isUnauthorized());
@@ -220,7 +224,7 @@ class ApiSecurityTest {
         account = UserProfile.builder().id(UUID.fromString(SUBJECT)).enabled(true).roles(Set.of(UserRole.user)).build();
         when(repository.findById(any())).thenReturn(Optional.of(account));
         mvc.perform(get(ADMIN).header("Authorization", "Bearer " + token)).andExpect(status().isForbidden());
-        mvc.perform(get(ME).header("Authorization", "Bearer " + token)).andExpect(status().isOk());
+        mvc.perform(get(ME).header("Authorization", "Bearer " + token)).andExpect(status().isForbidden());
     }
 
     @Test
@@ -262,6 +266,39 @@ class ApiSecurityTest {
                 .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
                 .andExpect(jsonPath("status").value(503))
                 .andExpect(jsonPath("detail").value("The service is temporarily unavailable."));
+    }
+
+    @Test
+    void administratorCannotDeleteOwnAccountEvenWithAValidToken() throws Exception {
+        mvc.perform(delete(ME)).andExpect(status().isUnauthorized());
+        mvc.perform(delete(ME).header("Authorization", "Bearer " + token(false, "admin", claims -> {})))
+                .andExpect(status().isForbidden());
+        mvc.perform(delete(ME).header("Authorization", "Bearer " + token(false, "user", claims -> {})))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void protectsAllPhotoOperationsAndAllowsPutCorsPreflight() throws Exception {
+        String path = "/api/v1/users/me/photo";
+        mvc.perform(get(path)).andExpect(status().isUnauthorized());
+        mvc.perform(put(path)).andExpect(status().isUnauthorized());
+        mvc.perform(delete(path)).andExpect(status().isUnauthorized());
+        String bearer = "Bearer " + token(false, "user", claims -> {});
+        mvc.perform(get(path).header("Authorization", bearer)).andExpect(status().isOk());
+        mvc.perform(put(path).header("Authorization", bearer)).andExpect(status().isOk());
+        mvc.perform(delete(path).header("Authorization", bearer)).andExpect(status().isOk());
+        String bound = token(true, "user", claims -> {});
+        mvc.perform(put(path).header("Authorization", "DPoP " + bound)
+                        .header("DPoP", proof(bound, path, "PUT", PROOF_KEY, claims -> {})))
+                .andExpect(status().isOk());
+        mvc.perform(options(path).header("Origin", "http://localhost:4200")
+                        .header("Access-Control-Request-Method", "PUT")
+                        .header("Access-Control-Request-Headers", "Authorization,Content-Type,DPoP"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Access-Control-Allow-Origin", "http://localhost:4200"));
+        when(repository.findById(any())).thenReturn(Optional.of(UserProfile.builder()
+                .id(UUID.fromString(SUBJECT)).enabled(false).build()));
+        mvc.perform(put(path).header("Authorization", bearer)).andExpect(status().isForbidden());
     }
 
     private static String token(boolean bound, String role, Consumer<JWTClaimsSet.Builder> customizer) throws Exception {
@@ -327,6 +364,15 @@ class ApiSecurityTest {
 
     @RestController
     static class Endpoints {
+        @org.springframework.web.bind.annotation.DeleteMapping(ME)
+        String deletion() { return "deleted"; }
+
+        @org.springframework.web.bind.annotation.RequestMapping(value = "/api/v1/users/me/photo",
+                method = {org.springframework.web.bind.annotation.RequestMethod.GET,
+                        org.springframework.web.bind.annotation.RequestMethod.PUT,
+                        org.springframework.web.bind.annotation.RequestMethod.DELETE})
+        String photo() { return "photo"; }
+
         @GetMapping({ME, HEADER, ADMIN, "/unmapped"}) String endpoint(
                 @org.springframework.security.core.annotation.AuthenticationPrincipal org.springframework.security.oauth2.jwt.Jwt principal) {
             assertThat(principal).isNotNull();

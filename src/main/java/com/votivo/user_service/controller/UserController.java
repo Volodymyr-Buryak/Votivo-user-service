@@ -1,5 +1,7 @@
 package com.votivo.user_service.controller;
 
+import org.springframework.http.ResponseEntity;
+
 import java.util.UUID;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -37,9 +39,9 @@ public class UserController {
     }
 
     @DeleteMapping
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void deleteOwn(@AuthenticationPrincipal Jwt jwt) {
-        profiles.deleteOwn(UUID.fromString(jwt.getSubject()));
+    public ResponseEntity<Void> deleteOwn(@AuthenticationPrincipal Jwt jwt) {
+        boolean complete = profiles.deleteOwn(UUID.fromString(jwt.getSubject()));
+        return ResponseEntity.status(complete ? HttpStatus.NO_CONTENT : HttpStatus.ACCEPTED).build();
     }
 
 }

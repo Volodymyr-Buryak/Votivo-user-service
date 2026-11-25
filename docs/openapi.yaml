@@ -5,12 +5,13 @@ info:
   description: |
     API собственного профиля и административного управления пользователями.
     Keycloak является источником идентификационных данных, PostgreSQL хранит локальную проекцию.
-    Регистрация, вход, пароли и аватары этим API не реализованы.
+    Регистрация, вход и пароли этим API не реализованы. Фотография профиля хранится локально в PostgreSQL.
 
-    Все операции требуют JWT access token: проверяются подпись через JWKS, issuer,
+    Публичные операции /api/v1 требуют JWT access token: проверяются подпись через JWKS, issuer,
     временные ограничения, обязательный exp, audience (по умолчанию user-service)
     и sub в канонической строковой форме UUID. Роли читаются из realm_access.roles:
-    только строчные user и admin; admin также даёт доступ к собственному профилю.
+    только строчные user и admin; собственный профиль и фото доступны user без роли admin.
+    Для admin доступна только сводка собственного имени /users/me/header и admin API.
     Для admin API при наличии локального профиля вызывающего дополнительно проверяется
     его локальная роль admin. Заблокированный или локально удалённый вызывающий получает 403.
 
@@ -32,7 +33,7 @@ servers:
     description: Публикуемый порт User Service в backend Docker Compose.
 tags:
   - name: Profile
-    description: Собственный профиль; роль user или admin из access token.
+    description: Собственный профиль; роль user без admin. Сводка имени header доступна также admin.
   - name: Administration
     description: Администрирование; роль admin из access token и проверка локального статуса.
 security:
@@ -43,6 +44,160 @@ x-dpop-proof:
   requiredWhen: Authorization использует схему DPoP; токен связан с ключом через cnf.jkt.
   generation: Новый подписанный proof JWT для каждого запроса; не статический API key.
 paths:
+  /internal/v1/users/{id}/access:
+    get:
+      operationId: checkAccountAccess
+      summary: Внутренняя проверка текущего доступа для API Gateway
+      description: |
+        Вызывается шлюзом после проверки JWT и DPoP на исходном URL. Не кешируется.
+        Проверяет, что профиль не удалён и включён; admin=true также требует текущую локальную роль admin.
+        Токен пользователя и DPoP proof сюда не пересылаются. Доступ только по общему INTERNAL_AUTH_SECRET.
+      security:
+        - internalAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - name: admin
+          in: query
+          schema:
+            type: boolean
+            default: false
+        - name: issuedAt
+          in: query
+          required: true
+          description: iat из проверенного шлюзом JWT; старые токены остаются отозванными после разблокировки.
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        '204':
+          description: Доступ разрешён. Тело отсутствует; Cache-Control no-store.
+        '401':
+          description: Неверный или отсутствующий секрет шлюза.
+        '403':
+          description: Пользователь заблокирован или административная роль отозвана.
+        '404':
+          description: Пользователь не существует или удалён.
+        '503':
+          description: Проверка недоступна или общий секрет не настроен.
+  /api/v1/users/me/photo:
+    parameters:
+      - $ref: '#/components/parameters/DPoPProof'
+    put:
+      tags: [Profile]
+      operationId: replaceOwnPhoto
+      summary: Загрузить или заменить фотографию профиля
+      description: |
+        Сохраняет одну фотографию пользователя из sub JWT как бинарник в PostgreSQL.
+        Полностью заменяет предыдущее фото только после успешной проверки нового.
+        Формат определяется по содержимому; MIME-тип и имя файла клиента не используются.
+        По умолчанию разрешены JPEG/PNG, до 5MB (5242880 байт) включительно,
+        ширина и высота до 4096 пикселей включительно. Настройки app.photo могут
+        изменять эти ограничения. Multipart-запрос ограничен 6MB по умолчанию.
+        Фото не отправляется в Keycloak и сохраняется при синхронизации профиля.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Непустое изображение JPEG или PNG.
+      responses:
+        '204':
+          description: Фотография сохранена или заменена. Тело ответа отсутствует.
+        '400':
+          description: Отсутствует file, файл пуст, повреждён или превышает допустимые размеры в пикселях.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          description: Превышен лимит размера файла или всего multipart-запроса.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '415':
+          description: Запрос не multipart/form-data либо распознанный формат изображения не разрешён.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        default:
+          $ref: '#/components/responses/Unexpected'
+    get:
+      tags: [Profile]
+      operationId: getOwnPhoto
+      summary: Получить свою фотографию профиля
+      description: Возвращает исходные сохранённые байты. Доступ требует той же авторизации, что и профиль.
+      responses:
+        '200':
+          description: Бинарник фотографии с фактическим Content-Type.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            X-Content-Type-Options:
+              schema:
+                type: string
+                const: nosniff
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Фотография отсутствует либо профиль не найден или удалён.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        default:
+          $ref: '#/components/responses/Unexpected'
+    delete:
+      tags: [Profile]
+      operationId: deleteOwnPhoto
+      summary: Удалить свою фотографию профиля
+      description: |
+        Удаляет только фотографию. Повторное удаление при отсутствии фото также возвращает 204.
+        Удаление аккаунта, в том числе через синхронизацию, также удаляет его фотографию.
+      responses:
+        '204':
+          description: Фотография отсутствует. Тело ответа отсутствует.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        default:
+          $ref: '#/components/responses/Unexpected'
   /api/v1/users/me/header:
     parameters:
       - $ref: '#/components/parameters/DPoPProof'
@@ -139,16 +294,27 @@ paths:
     delete:
       tags: [Profile]
       operationId: deleteOwnProfile
-      summary: Удалить собственную учётную запись
+      summary: Удалить собственный аккаунт
       description: |
-        Удаляет пользователя в Keycloak, затем помечает локальную проекцию удалённой,
-        очищая email, имя, фамилию и роли и отключая профиль. ID берётся из sub токена.
-        Записи с deletedAt не попадают в чтение и списки. Повторный запрос с тем же
-        токеном при наличии локальной отметки удаления получает 403.
-        Удаление в Keycloak и локальная запись не являются одной транзакцией.
+        Аккаунт администратора нельзя удалить через этот API (403): удаление доступно только в Keycloak.
+        Запрещено для заблокированного аккаунта (403) и при собственных голосованиях
+        со статусом PUBLISHED (409). Черновики, CLOSED и ARCHIVED не мешают удалению.
+        Статус аккаунта повторно проверяется в Keycloak перед удалением.
+        Poll Service атомарно проверяет голосования и запрещает новые публикации владельца.
+        Затем профиль помечается deletedAt, личные данные и фото очищаются в локальной транзакции.
+        В Keycloak отправляется enabled=false и отзыв сессий; физического удаления нет.
+        Старые email и username заменяются уникальными техническими значениями на deleted.invalid,
+        emailVerified сбрасывается. После завершения можно зарегистрироваться со старой почтой:
+        это новый аккаунт с новым UUID и обязательным повторным подтверждением email (verifyEmail=true).
+        Синхронизация не восстанавливает удалённые профили.
+        При недоступности Keycloak после локального удаления возвращается 202:
+        сохранённая задача повторяет отключение, отзыв сессий и освобождение адреса после восстановления связи/перезапуска.
+        Повторный запрос удалённого пользователя получает 403.
       responses:
         '204':
-          description: Пользователь удалён; тело отсутствует.
+          description: Профиль удалён, пользователь отключён в Keycloak, сессии отозваны, email и username освобождены.
+        '202':
+          description: Профиль удалён; отключение Keycloak, отзыв сессий и освобождение адреса сохранены для повторной попытки.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -156,9 +322,23 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/Conflict'
+          description: Есть собственные опубликованные незавершённые голосования.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                code: account.unfinished-polls
+                detail: Close your published polls before deleting your account.
         '503':
-          $ref: '#/components/responses/Unavailable'
+          description: До локального удаления не удалось проверить Keycloak или Poll Service; удаление не выполнено.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
         default:
           $ref: '#/components/responses/Unexpected'
   /api/v1/admin/users:
@@ -266,6 +446,11 @@ paths:
       description: |
         Изменяет enabled в Keycloak и синхронизирует локальный профиль.
         При enabled=false дополнительно отзывает пользовательские сессии в Keycloak.
+        После подтверждения Keycloak сохраняет enabled локально до полной синхронизации профиля.
+        Блокировка не изменяет опросы, голоса, фото или персональные данные. Разблокировка
+        не снимает отдельную модерационную блокировку опросов.
+        Время отзыва сессий сохраняется в базе: после разблокировки нужен новый вход,
+        токены с iat не позднее этого времени остаются недействительными.
         Администратор не может заблокировать самого себя (403).
         Сервис проверяет собственный профиль администратора и существование целевого.
         Удалённая или отсутствующая целевая запись возвращает 404.
@@ -300,6 +485,11 @@ paths:
           $ref: '#/components/responses/Unexpected'
 components:
   securitySchemes:
+    internalAuth:
+      type: apiKey
+      in: header
+      name: X-Internal-Auth
+      description: Общий серверный секрет шлюза. Никогда не передавать в браузер.
     bearerAuth:
       type: http
       scheme: bearer
@@ -469,6 +659,10 @@ components:
           type: string
           format: uri-reference
           example: /api/v1/users/me
+        code:
+          type: string
+          description: Необязательный код ошибки проверки изображения или удаления аккаунта.
+          enum: [image.invalid, image.too-large, image.dimensions-exceeded, image.unsupported-format, account.unfinished-polls]
         errors:
           type: object
           additionalProperties:

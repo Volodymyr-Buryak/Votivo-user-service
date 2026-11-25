@@ -119,7 +119,9 @@ class UserSynchronizationServiceTest {
         UUID id = UUID.randomUUID();
         var reader = mock(ProfileReader.class);
         var management = mock(KeycloakUserManagementClient.class);
-        var profiles = new ProfileServiceImpl(reader, service, management, writer, locks);
+        var polls = mock(com.votivo.user_service.integration.poll.PollDeletionClient.class);
+        var completion = mock(AccountDeletionCompletion.class);
+        var profiles = new ProfileServiceImpl(reader, service, management, writer, locks, polls, completion);
         when(reader.find(id)).thenReturn(Optional.of(new UserResponse(id, "a@b.test", "A", "B", true, true,
                 Set.of(UserRole.user), Instant.EPOCH, Instant.EPOCH)));
         CountDownLatch fetchStarted = new CountDownLatch(1);
@@ -144,10 +146,12 @@ class UserSynchronizationServiceTest {
             snapshot.get(5, TimeUnit.SECONDS);
             deletion.get(5, TimeUnit.SECONDS);
         }
-        var order = inOrder(writer, management);
-        order.verify(writer).upsert(any(), any());
-        order.verify(management).delete(id);
-        order.verify(writer).softDelete(id);
+        var order = inOrder(writer, polls, completion);
+        order.verify(writer, times(2)).upsert(any(), any());
+        order.verify(polls).reserve(id);
+        order.verify(writer).requestDeletion(id);
+        order.verify(completion).complete(id);
+        verify(management, never()).delete(any());
     }
 
     @Test

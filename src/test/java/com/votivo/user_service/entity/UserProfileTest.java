@@ -35,7 +35,7 @@ class UserProfileTest {
     }
 
     @Test
-    void deletionClearsPersonalDataAndIsIdempotentAndCanBeRestored() {
+    void deletionClearsPersonalDataAndCannotBeRestoredBySynchronization() {
         UUID id = UUID.randomUUID();
         var profile = UserProfile.builder().id(id).build();
         var now = Instant.now();
@@ -53,7 +53,7 @@ class UserProfileTest {
         assertThat(profile.getUpdatedAt()).isEqualTo(now.plusSeconds(1));
         assertThat(profile.getSyncedAt()).isEqualTo(now.plusSeconds(2));
         profile.synchronize("new@example.org", null, null, false, true, Set.of(UserRole.user), now, now.plusSeconds(3));
-        assertThat(profile.getDeletedAt()).isNull();
-        assertThat(profile.getEmail()).isEqualTo("new@example.org");
+        assertThat(profile.getDeletedAt()).isEqualTo(now.plusSeconds(1));
+        assertThat(profile.getEmail()).isNull();
     }
 }

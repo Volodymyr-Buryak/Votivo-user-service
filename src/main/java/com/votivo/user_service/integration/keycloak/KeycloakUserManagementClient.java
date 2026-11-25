@@ -23,6 +23,7 @@ public class KeycloakUserManagementClient {
     private final RestClient http;
     private final IdentityProperties identity;
     private final KeycloakTokenProvider tokens;
+    private final boolean emailAsUsername;
 
     @Autowired
     public KeycloakUserManagementClient(RestClient.Builder builder, IdentityProperties identity,
@@ -34,6 +35,7 @@ public class KeycloakUserManagementClient {
                                  IdentityManagementProperties properties, Clock clock) {
         this.http = http;
         this.identity = identity;
+        this.emailAsUsername = properties.emailAsUsername();
         this.tokens = new KeycloakTokenProvider(http, identity.realm(), properties.clientId(),
                 properties.clientSecret(), clock);
     }
@@ -47,6 +49,21 @@ public class KeycloakUserManagementClient {
 
     public void setEnabled(UUID id, boolean enabled) {
         write(HttpMethod.PUT, id, null, Map.of("enabled", enabled));
+    }
+
+    /** Releases the original identifiers without deleting or reactivating the old identity. */
+    public void anonymizeDeletedUser(UUID id) {
+        String deletedUsername = "deleted-" + id;
+        String deletedEmail = deletedUsername + "@deleted.invalid";
+        write(HttpMethod.PUT, id, null, Map.of(
+                "enabled", false,
+                "username", emailAsUsername ? deletedEmail : deletedUsername,
+                "email", deletedEmail,
+                "emailVerified", false,
+                "firstName", "",
+                "lastName", "",
+                "requiredActions", java.util.List.of()
+        ));
     }
 
     public void logout(UUID id) {

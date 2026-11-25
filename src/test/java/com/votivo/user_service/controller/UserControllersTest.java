@@ -82,6 +82,7 @@ class UserControllersTest {
         mvc.perform(patch("/api/v1/users/me").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"firstName\":\"Ada\",\"lastName\":\"Lovelace\"}"))
                 .andExpect(status().isOk());
+        when(profiles.deleteOwn(actor)).thenReturn(true);
         mvc.perform(delete("/api/v1/users/me")).andExpect(status().isNoContent())
                 .andExpect(content().string(""));
         verify(profiles).getOwn(actor);

@@ -1,4 +1,8 @@
 spring:
+  servlet:
+    multipart:
+      max-file-size: ${app.photo.max-size}
+      max-request-size: ${APP_PHOTO_MAX_REQUEST_SIZE:6MB}
   jackson:
     deserialization:
       fail-on-unknown-properties: true
@@ -32,7 +36,17 @@ spring:
           max-interval: 5s
 
 app:
+  account-deletion:
+    poll-url: ${APP_ACCOUNT_DELETION_POLL_URL:http://localhost:18082}
+    secret: ${ACCOUNT_DELETION_SECRET:}
+    retry-interval: ${APP_ACCOUNT_DELETION_RETRY_INTERVAL:PT30S}
+  photo:
+    max-size: ${APP_PHOTO_MAX_SIZE:5MB}
+    max-width-pixels: ${APP_PHOTO_MAX_WIDTH_PIXELS:4096}
+    max-height-pixels: ${APP_PHOTO_MAX_HEIGHT_PIXELS:4096}
+    allowed-formats: ${APP_PHOTO_ALLOWED_FORMATS:JPEG,PNG}
   security:
+    internal-secret: ${INTERNAL_AUTH_SECRET:}
     issuer-uri: ${APP_SECURITY_ISSUER_URI:http://localhost:18080/realms/votivo}
     jwk-set-uri: ${APP_SECURITY_JWK_SET_URI:http://localhost:18080/realms/votivo/protocol/openid-connect/certs}
     audience: ${APP_SECURITY_AUDIENCE:user-service}

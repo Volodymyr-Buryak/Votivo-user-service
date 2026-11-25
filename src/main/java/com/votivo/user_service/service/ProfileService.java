@@ -11,7 +11,7 @@ public interface ProfileService {
     UserHeaderResponse getOwnHeader(UUID id);
     UserResponse getById(UUID id);
     UserResponse updateOwn(UUID id, UpdateProfileRequest request);
-    void deleteOwn(UUID id);
+    boolean deleteOwn(UUID id);
     UserPageResponse list(String search, Boolean enabled, int page, int size);
     UserResponse setEnabled(UUID actorId, UUID targetId, boolean enabled);
 }

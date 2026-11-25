@@ -8,8 +8,17 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.jpa.repository.Lock;
+import jakarta.persistence.LockModeType;
 
 public interface UserProfileRepository extends JpaRepository<UserProfile, UUID> {
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select u from UserProfile u where u.id = :id")
+    Optional<UserProfile> findByIdForUpdate(UUID id);
+
+    @Query("select u.id from UserProfile u where u.identityDeletionPending = true")
+    List<UUID> findPendingIdentityDeletionIds();
+
     @Query("select u.id from UserProfile u where u.deletedAt is null")
     List<UUID> findActiveIds();
 

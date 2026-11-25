@@ -1,5 +1,8 @@
 package com.votivo.user_service.service.impl;
 
+import com.votivo.user_service.integration.poll.PollDeletionClient;
+import com.votivo.user_service.service.AccountDeletionCompletion;
+
 import com.votivo.user_service.dto.request.UpdateProfileRequest;
 import com.votivo.user_service.dto.response.UserPageResponse;
 import com.votivo.user_service.dto.response.UserResponse;
@@ -25,6 +28,8 @@ public class ProfileServiceImpl implements ProfileService {
     private final KeycloakUserManagementClient management;
     private final ProfileWriter writer;
     private final UserLockManager locks;
+    private final PollDeletionClient polls;
+    private final AccountDeletionCompletion deletions;
 
     @Override
     public UserResponse getOwn(UUID id) {
@@ -62,12 +67,28 @@ public class ProfileServiceImpl implements ProfileService {
     }
 
     @Override
-    public void deleteOwn(UUID id) {
-        locks.withUserLock(id, () -> {
-            getOwn(id);
-            management.delete(id);
-            writer.softDelete(id);
-            return null;
+    public boolean deleteOwn(UUID id) {
+        return locks.withUserLock(id, () -> {
+            if (getOwn(id).roles().contains(com.votivo.user_service.entity.UserRole.admin))
+                throw new ProfileAccessDeniedException();
+            // Recheck authoritative status and roles before the irreversible local change.
+            synchronization.synchronize(id);
+            if (getOwn(id).roles().contains(com.votivo.user_service.entity.UserRole.admin))
+                throw new ProfileAccessDeniedException();
+            polls.reserve(id);
+            try {
+                writer.requestDeletion(id);
+            } catch (RuntimeException failure) {
+                try {
+                    // A second instance or an ambiguous commit may already have deleted the profile.
+                    // Never reopen publishing for a confirmed tombstone.
+                    if (reader.find(id).isPresent() || !reader.exists(id)) polls.release(id);
+                    else return false;
+                } catch (RuntimeException releaseFailure) { failure.addSuppressed(releaseFailure); }
+                throw failure;
+            }
+            try { return deletions.complete(id); }
+            catch (RuntimeException failure) { return false; } // Durable marker is retried after restart.
         });
     }
 
@@ -92,6 +113,8 @@ public class ProfileServiceImpl implements ProfileService {
 
     private void synchronizeAndRevokeSessions(UUID targetId, boolean enabled) {
         try {
+            // Commit confirmed Keycloak status before optional profile/role reconciliation.
+            writer.setEnabled(targetId, enabled);
             synchronization.synchronize(targetId);
         } catch (RuntimeException failure) {
             if (!enabled) {

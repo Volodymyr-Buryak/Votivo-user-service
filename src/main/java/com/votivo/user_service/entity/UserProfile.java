@@ -35,6 +35,8 @@ public class UserProfile {
     private Instant updatedAt;
     private Instant syncedAt;
     private Instant deletedAt;
+    private boolean identityDeletionPending;
+    private Instant sessionsRevokedAt;
 
     @Version
     private Long version;
@@ -50,6 +52,8 @@ public class UserProfile {
             Instant now
     ) {
 
+        if (deletedAt != null) return;
+
         boolean changed = updatedAt == null || deletedAt != null || !Objects.equals(this.email, email)
                 || !Objects.equals(this.firstName, firstName) || !Objects.equals(this.lastName, lastName)
                 || this.emailVerified != emailVerified || this.enabled != enabled
@@ -59,6 +63,7 @@ public class UserProfile {
         this.firstName = firstName;
         this.lastName = lastName;
         this.emailVerified = emailVerified;
+        if (this.enabled && !enabled) this.sessionsRevokedAt = now;
         this.enabled = enabled;
         this.roles = new HashSet<>(roles);
         this.createdAt = createdAt;
@@ -83,8 +88,23 @@ public class UserProfile {
         syncedAt = now;
     }
 
+    public void requestIdentityDeletion(Instant now) {
+        softDelete(now);
+        identityDeletionPending = true;
+    }
+
+    public void completeIdentityDeletion() {
+        identityDeletionPending = false;
+    }
+
     public Set<UserRole> getRoles() {
         return Set.copyOf(roles);
+    }
+
+    public void changeEnabled(boolean enabled, Instant now) {
+        this.enabled = enabled;
+        this.updatedAt = now;
+        if (!enabled) this.sessionsRevokedAt = now;
     }
 
 }

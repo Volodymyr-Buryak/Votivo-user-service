@@ -61,6 +61,53 @@ class KeycloakUserManagementClientTest {
     }
 
     @Test
+    void deletionReleasesEmailAndUsernameWithoutPreservingVerificationOrPersonalNames() {
+        token("cached");
+        String alias = "deleted-" + id + "@deleted.invalid";
+        String expected = """
+                {"enabled":false,"username":"%s","email":"%s","emailVerified":false,
+                 "firstName":"","lastName":"","requiredActions":[]}
+                """.formatted(alias, alias);
+        server.expect(requestTo(userUrl)).andExpect(method(HttpMethod.PUT))
+                .andExpect(content().json(expected, org.springframework.test.json.JsonCompareMode.STRICT))
+                .andRespond(withNoContent());
+        server.expect(requestTo(userUrl)).andExpect(method(HttpMethod.PUT))
+                .andExpect(content().json(expected, org.springframework.test.json.JsonCompareMode.STRICT))
+                .andRespond(withNoContent());
+        client.anonymizeDeletedUser(id);
+        client.anonymizeDeletedUser(id);
+        server.verify();
+    }
+
+    @Test
+    void differentDeletedUsersGetDistinctIdentifiers() {
+        UUID second = UUID.randomUUID();
+        token("cached");
+        for (UUID current : java.util.List.of(id, second)) {
+            server.expect(requestTo("https://identity.test/auth/admin/realms/test/users/" + current))
+                    .andExpect(jsonPath("$.email").value("deleted-" + current + "@deleted.invalid"))
+                    .andExpect(jsonPath("$.username").value("deleted-" + current + "@deleted.invalid"))
+                    .andRespond(withNoContent());
+        }
+        client.anonymizeDeletedUser(id);
+        client.anonymizeDeletedUser(second);
+        server.verify();
+    }
+
+    @Test
+    void independentUsernameIsReleasedWhenEmailAsUsernameIsDisabled() {
+        var independent = new KeycloakUserManagementClient(builder.build(), identity,
+                new IdentityManagementProperties("management", "write-secret", false), Clock.systemUTC());
+        token("cached");
+        server.expect(requestTo(userUrl)).andExpect(method(HttpMethod.PUT))
+                .andExpect(jsonPath("$.username").value("deleted-" + id))
+                .andExpect(jsonPath("$.email").value("deleted-" + id + "@deleted.invalid"))
+                .andExpect(jsonPath("$.emailVerified").value(false)).andRespond(withNoContent());
+        independent.anonymizeDeletedUser(id);
+        server.verify();
+    }
+
+    @Test
     void onlyExplicit401IsRetriedOnceWithAFreshManagementToken() {
         token("rejected");
         server.expect(requestTo(userUrl)).andExpect(header("Authorization", "Bearer rejected"))

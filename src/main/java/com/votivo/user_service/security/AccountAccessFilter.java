@@ -36,12 +36,13 @@ public final class AccountAccessFilter extends OncePerRequestFilter {
             boolean allowed;
             try {
                 allowed = accountStatus.allows(UUID.fromString(jwt.getToken().getSubject()),
-                        path.equals("/api/v1/admin") || path.startsWith("/api/v1/admin/"));
+                        path.equals("/api/v1/admin") || path.startsWith("/api/v1/admin/"), jwt.getToken().getIssuedAt());
             } catch (DataAccessException | TransactionException exception) {
                 problems.write(response, HttpStatus.SERVICE_UNAVAILABLE);
                 return;
             }
             if (!allowed) {
+                response.setHeader("X-Account-Access", "denied");
                 problems.write(response, HttpStatus.FORBIDDEN);
                 return;
             }

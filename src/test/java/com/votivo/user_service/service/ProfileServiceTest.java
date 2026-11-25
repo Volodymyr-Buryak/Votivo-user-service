@@ -24,7 +24,9 @@ class ProfileServiceTest {
     private final UserSynchronizationService synchronization = mock(UserSynchronizationService.class);
     private final KeycloakUserManagementClient management = mock(KeycloakUserManagementClient.class);
     private final ProfileWriter writer = mock(ProfileWriter.class);
-    private final ProfileService service = new ProfileServiceImpl(reader, synchronization, management, writer, new UserLockManager());
+    private final com.votivo.user_service.integration.poll.PollDeletionClient polls = mock(com.votivo.user_service.integration.poll.PollDeletionClient.class);
+    private final AccountDeletionCompletion deletions = mock(AccountDeletionCompletion.class);
+    private final ProfileService service = new ProfileServiceImpl(reader, synchronization, management, writer, new UserLockManager(), polls, deletions);
     private final UUID id = UUID.randomUUID();
 
     @Test
@@ -103,16 +105,80 @@ class ProfileServiceTest {
     }
 
     @Test
-    void deletionClearsProjectionOnlyAfterConfirmedIdentityDeletion() {
+    void deletionReservesPollsAndSoftDeletesWithoutPhysicallyDeletingIdentity() {
         when(reader.find(id)).thenReturn(Optional.of(response(id, true, "old@example.org")));
-        service.deleteOwn(id);
-        var order = inOrder(management, writer);
-        order.verify(management).delete(id);
-        order.verify(writer).softDelete(id);
-        clearInvocations(writer);
-        doThrow(new IdentityAccessException("Unavailable")).when(management).delete(id);
-        assertThatThrownBy(() -> service.deleteOwn(id)).isInstanceOf(IdentityAccessException.class);
-        verifyNoInteractions(writer);
+        when(deletions.complete(id)).thenReturn(true);
+        assertThat(service.deleteOwn(id)).isTrue();
+        var order = inOrder(synchronization, polls, writer, deletions);
+        order.verify(synchronization).synchronize(id);
+        order.verify(polls).reserve(id);
+        order.verify(writer).requestDeletion(id);
+        order.verify(deletions).complete(id);
+        verify(management, never()).delete(any());
+    }
+
+    @Test
+    void unfinishedPollsAndPollOutagesPreventEveryDeletionSideEffect() {
+        when(reader.find(id)).thenReturn(Optional.of(response(id, true, "old@example.org")));
+        doThrow(new com.votivo.user_service.service.exception.UnfinishedPollsException()).when(polls).reserve(id);
+        assertThatThrownBy(() -> service.deleteOwn(id)).isInstanceOf(com.votivo.user_service.service.exception.UnfinishedPollsException.class);
+        verifyNoInteractions(writer, management, deletions);
+        doThrow(new com.votivo.user_service.service.exception.PollServiceUnavailableException()).when(polls).reserve(id);
+        assertThatThrownBy(() -> service.deleteOwn(id)).isInstanceOf(com.votivo.user_service.service.exception.PollServiceUnavailableException.class);
+        verifyNoInteractions(writer, management, deletions);
+    }
+
+    @Test
+    void failedLocalDeletionReleasesThePollReservation() {
+        when(reader.find(id)).thenReturn(Optional.of(response(id, true, "old@example.org")));
+        doThrow(new IllegalStateException("database unavailable")).when(writer).requestDeletion(id);
+        assertThatThrownBy(() -> service.deleteOwn(id)).isInstanceOf(IllegalStateException.class);
+        verify(polls).release(id);
+        verifyNoInteractions(deletions, management);
+    }
+
+    @Test
+    void failedIdentityDeactivationLeavesDurableDeletionPending() {
+        when(reader.find(id)).thenReturn(Optional.of(response(id, true, "old@example.org")));
+        assertThat(service.deleteOwn(id)).isFalse();
+        verify(writer).requestDeletion(id);
+        verify(polls, never()).release(any());
+    }
+
+    @Test
+    void concurrentCommittedDeletionNeverReopensPublishing() {
+        var current = response(id, true, "old@example.org");
+        when(reader.find(id)).thenReturn(Optional.of(current), Optional.of(current), Optional.empty());
+        when(reader.exists(id)).thenReturn(true);
+        doThrow(new UserNotFoundException()).when(writer).requestDeletion(id);
+        assertThat(service.deleteOwn(id)).isFalse();
+        verify(polls, never()).release(any());
+    }
+
+    @Test
+    void administratorCannotSelfDeleteBeforeAnyExternalOperation() {
+        var admin = UserResponse.builder().id(id).enabled(true).roles(Set.of(UserRole.admin, UserRole.user)).build();
+        when(reader.find(id)).thenReturn(Optional.of(admin));
+        assertThatThrownBy(() -> service.deleteOwn(id)).isInstanceOf(ProfileAccessDeniedException.class);
+        verifyNoInteractions(synchronization, polls, writer, management, deletions);
+    }
+
+    @Test
+    void newlyGrantedAdminRolePreventsDeletionAfterAuthoritativeSynchronization() {
+        var admin = UserResponse.builder().id(id).enabled(true).roles(Set.of(UserRole.admin, UserRole.user)).build();
+        when(reader.find(id)).thenReturn(Optional.of(response(id, true, "user@example.org")), Optional.of(admin));
+        assertThatThrownBy(() -> service.deleteOwn(id)).isInstanceOf(ProfileAccessDeniedException.class);
+        verify(synchronization).synchronize(id);
+        verifyNoInteractions(polls, writer, management, deletions);
+    }
+
+    @Test
+    void authoritativeBlockRejectsDeletionBeforePollReservation() {
+        when(reader.find(id)).thenReturn(Optional.of(response(id, true, "old@example.org")),
+                Optional.of(response(id, false, "old@example.org")));
+        assertThatThrownBy(() -> service.deleteOwn(id)).isInstanceOf(ProfileAccessDeniedException.class);
+        verify(synchronization).synchronize(id);
+        verifyNoInteractions(polls, writer, management, deletions);
     }
 
     @Test
@@ -129,14 +195,17 @@ class ProfileServiceTest {
         when(reader.find(target)).thenReturn(Optional.of(response(target, true, "user@example.org")),
                 Optional.of(response(target, false, "user@example.org")));
         assertThat(service.setEnabled(id, target, false).enabled()).isFalse();
-        var order = inOrder(management, synchronization);
+        var order = inOrder(management, writer, synchronization);
         order.verify(management).setEnabled(target, false);
+        order.verify(writer).setEnabled(target, false);
         order.verify(synchronization).synchronize(target);
         order.verify(management).logout(target);
         clearInvocations(management);
         service.setEnabled(id, target, true);
         verify(management).setEnabled(target, true);
         verify(management, never()).logout(any());
+        verify(writer).setEnabled(target, true);
+        verifyNoInteractions(polls, deletions);
     }
 
     @Test
@@ -147,6 +216,7 @@ class ProfileServiceTest {
         doThrow(new IdentityAccessException("Projection refresh unavailable")).when(synchronization).synchronize(target);
         assertThatThrownBy(() -> service.setEnabled(id, target, false)).isInstanceOf(IdentityAccessException.class);
         verify(management).setEnabled(target, false);
+        verify(writer).setEnabled(target, false);
         verify(management).logout(target);
     }
 

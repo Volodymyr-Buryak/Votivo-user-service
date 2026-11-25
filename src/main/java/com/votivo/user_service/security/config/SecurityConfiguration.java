@@ -70,8 +70,16 @@ public class SecurityConfiguration {
                 .authorizeHttpRequests(config -> config
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers("/actuator/health").permitAll()
+                        .requestMatchers(org.springframework.http.HttpMethod.GET, "/internal/v1/users/*/access").permitAll()
                         .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
-                        .requestMatchers("/api/v1/users/me", "/api/v1/users/me/header").hasAnyRole("USER", "ADMIN")
+                        .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/v1/users/me/header").hasAnyRole("USER", "ADMIN")
+                        .requestMatchers("/api/v1/users/me", "/api/v1/users/me/photo")
+                        .access((authentication, context) -> {
+                            var authorities = authentication.get().getAuthorities();
+                            return new org.springframework.security.authorization.AuthorizationDecision(
+                                    authorities.stream().anyMatch(a -> a.getAuthority().equals("ROLE_USER"))
+                                    && authorities.stream().noneMatch(a -> a.getAuthority().equals("ROLE_ADMIN")));
+                        })
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(resource -> {
                     resource.jwt(jwt -> jwt.decoder(decoder).jwtAuthenticationConverter(authenticationConverter()))
@@ -118,7 +126,7 @@ public class SecurityConfiguration {
     private static UrlBasedCorsConfigurationSource corsConfigurationSource(SecurityProperties properties) {
         var cors = new CorsConfiguration();
         cors.setAllowedOrigins(properties.allowedOrigins());
-        cors.setAllowedMethods(List.of("GET", "PATCH", "DELETE", "OPTIONS"));
+        cors.setAllowedMethods(List.of("GET", "PUT", "PATCH", "DELETE", "OPTIONS"));
         cors.setAllowedHeaders(List.of("Authorization", "Content-Type", "DPoP"));
         cors.setExposedHeaders(List.of("WWW-Authenticate"));
         var source = new UrlBasedCorsConfigurationSource();
